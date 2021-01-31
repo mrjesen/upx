@@ -132,6 +132,11 @@ PackDylibAMD64::PackDylibAMD64(InputFile *f) : super(f)
     my_filetype = Mach_header::MH_DYLIB;
 }
 
+PackDylibARM64::PackDylibARM64(InputFile *f) : super(f)
+{
+    my_filetype = Mach_header::MH_DYLIB;
+}
+
 PackDylibPPC32::PackDylibPPC32(InputFile *f) : super(f)
 {
     my_filetype = Mach_header::MH_DYLIB;
@@ -203,7 +208,7 @@ PackMachARMEL::PackMachARMEL(InputFile *f) : super(f, Mach_header::CPU_TYPE_ARM,
         sizeof(Mach_ARM_thread_state)>>2, sizeof(threado))
 { }
 
-PackMachARM64EL::PackMachARM64EL(InputFile *f) : super(f, Mach_header::CPU_TYPE_ARM64,
+PackMachARM64::PackMachARM64(InputFile *f) : super(f, Mach_header::CPU_TYPE_ARM64,
         Mach_header::MH_EXECUTE, (unsigned)Mach_thread_command::ARM_THREAD_STATE64,
         sizeof(Mach_ARM64_thread_state)>>2, sizeof(threado))
 { }
@@ -214,7 +219,7 @@ int const *PackMachARMEL::getFilters() const
     return filters;
 }
 
-int const *PackMachARM64EL::getFilters() const
+int const *PackMachARM64::getFilters() const
 {
     static const int filters[] = { 0x52, FT_END };
     return filters;
@@ -245,7 +250,7 @@ Linker *PackMachARMEL::newLinker() const
     return new ElfLinkerArmLE;
 }
 
-Linker *PackMachARM64EL::newLinker() const
+Linker *PackMachARM64::newLinker() const
 {
     return new ElfLinkerArm64LE;
 }
@@ -342,7 +347,7 @@ void PackMachARMEL::addStubEntrySections(Filter const * /*ft*/)
     addLoader("MACHMAINY,IDENTSTR,+40,MACHMAINZ,FOLDEXEC", nullptr);
 }
 
-void PackMachARM64EL::addStubEntrySections(Filter const * /*ft*/)
+void PackMachARM64::addStubEntrySections(Filter const * /*ft*/)
 {
     addLoader("MACHMAINX", nullptr);
    //addLoader(getDecompressorSections(), nullptr);
@@ -863,6 +868,11 @@ void PackDylibAMD64::pack4(OutputFile *fo, Filter &ft)  // append PackHeader
     pack4dylib(fo, ft, threado.state.rip);
 }
 
+void PackDylibARM64::pack4(OutputFile *fo, Filter &ft)  // append PackHeader
+{
+    pack4dylib(fo, ft, threado.state.pc);
+}
+
 void PackDylibPPC32::pack4(OutputFile *fo, Filter &ft)  // append PackHeader
 {
     pack4dylib(fo, ft, threado.state.srr0);
@@ -922,6 +932,30 @@ off_t PackDylibI386::pack3(OutputFile *fo, Filter &ft)  // append loader
 }
 
 off_t PackDylibAMD64::pack3(OutputFile *fo, Filter &ft)  // append loader
+{
+    TE32 disp;
+    upx_uint64_t const zero = 0;
+    off_t len = fo->getBytesWritten();
+    fo->write(&zero, 3& (0u-len));
+    len += (3& (0u-len)) + 3*sizeof(disp);
+
+    disp = prev_mod_init_func;
+    fo->write(&disp, sizeof(disp));  // user .init_address
+
+    disp = secTEXT.offset + sizeof(l_info) + sizeof(p_info);
+    fo->write(&disp, sizeof(disp));  // src offset(b_info)
+
+    disp = rawmseg[0].vmsize;
+    fo->write(&disp, sizeof(disp));  // __TEXT.vmsize when expanded
+
+    unsigned const save_sz_mach_headers(sz_mach_headers);
+    sz_mach_headers = 0;
+    len = super::pack3(fo, ft);
+    sz_mach_headers = save_sz_mach_headers;
+    return len;
+}
+
+off_t PackDylibARM64::pack3(OutputFile *fo, Filter &ft)  // append loader
 {
     TE32 disp;
     upx_uint64_t const zero = 0;
@@ -1177,7 +1211,7 @@ void PackMachARMEL::pack1_setup_threado(OutputFile *const fo)
     fo->write(&threado, sizeof(threado));
 }
 
-void PackMachARM64EL::pack1_setup_threado(OutputFile *const fo)
+void PackMachARM64::pack1_setup_threado(OutputFile *const fo)
 {
     threado.cmd = Mach_command::LC_UNIXTHREAD;
     threado.cmdsize = sizeof(threado);
@@ -2386,6 +2420,14 @@ bool PackMachFat::canPack()
             PackMachPPC64LE packer(fi);
             if (!packer.canPack()) {
                 PackDylibPPC64LE pack2r(fi);
+                if (!pack2r.canPack())
+                    return false;
+            }
+        } break;
+        case PackMachFat::CPU_TYPE_ARM64: {
+            PackMachARM64 packer(fi);
+            if (!packer.canPack()) {
+                PackDylibARM64 pack2r(fi);
                 if (!pack2r.canPack())
                     return false;
             }

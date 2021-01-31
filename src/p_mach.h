@@ -1204,12 +1204,12 @@ protected:
     }
 };
 
-class PackMachARM64EL : public PackMachBase<MachClass_LE64>
+class PackMachARM64 : public PackMachBase<MachClass_LE64>
 {
     typedef PackMachBase<MachClass_LE64> super;
 
 public:
-    PackMachARM64EL(InputFile *f);
+    PackMachARM64(InputFile *f);
 
     virtual int getFormat() const { return UPX_F_MACH_ARM64EL; }
     virtual const char *getName() const { return "macho/arm64"; }
@@ -1254,6 +1254,21 @@ protected:
         }
         return tc->state.pc;
     }
+};
+
+class PackDylibARM64 : public PackMachARM64
+{
+    typedef PackMachARM64 super;
+
+public:
+    PackDylibARM64(InputFile *f);
+
+    virtual int getFormat() const { return UPX_F_DYLIB_ARM64; }
+    virtual const char *getName() const { return "dylib/arm4"; }
+    virtual const char *getFullName(const options_t *) const { return "arm64-darwin.dylib"; }
+protected:
+    virtual off_t pack3(OutputFile *, Filter &);  // append loader
+    virtual void pack4(OutputFile *, Filter &);  // append PackHeader
 };
 
 class PackMachFat : public Packer
