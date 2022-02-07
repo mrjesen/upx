@@ -117,7 +117,9 @@ PeFile::PeFile(InputFile *f) : super(f)
 
     use_dep_hack = true;
     use_clear_dirty_stack = true;
+    use_stub_relocs = true;
     isrtm = false;
+    isefi = false;
 }
 
 
@@ -163,6 +165,13 @@ int PeFile::readFileHeader()
 
         if (h.mz == 'M' + 'Z'*256) // dos exe
         {
+            if (h.nexepos && h.nexepos < sizeof(exe_header_t)) {
+                // Overlapping MZ and PE headers by 'leanify', etc.
+                char buf[64]; snprintf(buf, sizeof(buf),
+                    "PE and MZ header overlap: %#x < %#x",
+                    (unsigned)h.nexepos, (unsigned)sizeof(exe_header_t));
+                throwCantPack(buf);
+            }
             unsigned const delta = (h.relocoffs >= 0x40)
                 ? h.nexepos // new format exe
                 : (h.p512*512+h.m512 - h.m512 ? 512 : h.nexepos);
@@ -184,8 +193,6 @@ int PeFile::readFileHeader()
         return 0;
     fi->seek(pe_offset,SEEK_SET);
     readPeHeader();
-    fi->seek(0x200,SEEK_SET);
-    fi->readx(&h,6);
     return getFormat();
 }
 
@@ -307,7 +314,7 @@ bool PeFile::Reloc::next(unsigned &pos,unsigned &type)
 {
     if (!rel)
         newRelocPos(start);
-    if (ptr_diff(rel, start) >= (int) size || rel->pagestart == 0) {
+    if (ptr_diff(rel, start) >= (int) size) {
         rel = nullptr; // rewind
         return false;
     }
@@ -356,7 +363,7 @@ void PeFile::Reloc::finish(upx_byte *&p,unsigned &siz)
 void PeFile::processRelocs(Reloc *rel) // pass2
 {
     rel->finish(oxrelocs,soxrelocs);
-    if (opt->win32_pe.strip_relocs && !isdll /*FIXME ASLR*/)
+    if (opt->win32_pe.strip_relocs)
         soxrelocs = 0;
 }
 
@@ -368,19 +375,25 @@ void PeFile32::processRelocs() // pass1
     unsigned const skip1 = IDADDR(PEDIR_RELOC);
     Reloc rel(ibuf.subref("bad reloc %#x", skip1, take1), take1);
     const unsigned *counts = rel.getcounts();
-    const unsigned rnum = counts[1] + counts[2] + counts[3];
+    unsigned rnum = 0;
 
-    if ((opt->win32_pe.strip_relocs && !isdll) || rnum == 0)
+    unsigned ic;
+    for (ic = 1; ic < 16; ic++)
+        rnum += counts[ic];
+
+    if (opt->win32_pe.strip_relocs || rnum == 0)
     {
         if (IDSIZE(PEDIR_RELOC))
+        {
             ibuf.fill(IDADDR(PEDIR_RELOC), IDSIZE(PEDIR_RELOC), FILLVAL);
+            ih.objects = tryremove(IDADDR(PEDIR_RELOC), ih.objects);
+        }
         mb_orelocs.alloc(1);
         orelocs = (upx_byte *)mb_orelocs.getVoidPtr();
         sorelocs = 0;
         return;
     }
 
-    unsigned ic;
     for (ic = 15; ic > 3; ic--)
         if (counts[ic])
             infoWarning("skipping unsupported relocation type %d (%d)",ic,counts[ic]);
@@ -428,7 +441,7 @@ void PeFile32::processRelocs() // pass1
     mb_orelocs.alloc(mem_size(4, rnum, 1024));  // 1024 - safety
     orelocs = (upx_byte *)mb_orelocs.getVoidPtr();
     sorelocs = ptr_diff(optimizeReloc32((upx_byte*) fix[3], xcounts[3],
-                            orelocs, ibuf + rvamin, 1, &big_relocs),
+                            orelocs, ibuf + rvamin, ibufgood - rvamin, 1, &big_relocs),
                         orelocs);
     delete [] fix[3];
 
@@ -471,10 +484,13 @@ void PeFile64::processRelocs() // pass1
     for (ic = 1; ic < 16; ic++)
         rnum += counts[ic];
 
-    if ((opt->win32_pe.strip_relocs && !isdll) || rnum == 0)
+    if (opt->win32_pe.strip_relocs || rnum == 0)
     {
         if (IDSIZE(PEDIR_RELOC))
+        {
             ibuf.fill(IDADDR(PEDIR_RELOC), IDSIZE(PEDIR_RELOC), FILLVAL);
+            ih.objects = tryremove(IDADDR(PEDIR_RELOC), ih.objects);
+        }
         mb_orelocs.alloc(1);
         orelocs = (upx_byte *)mb_orelocs.getVoidPtr();
         sorelocs = 0;
@@ -531,7 +547,7 @@ void PeFile64::processRelocs() // pass1
     mb_orelocs.alloc(mem_size(4, rnum, 1024));  // 1024 - safety
     orelocs = (upx_byte *)mb_orelocs.getVoidPtr();
     sorelocs = ptr_diff(optimizeReloc64((upx_byte*) fix[10], xcounts[10],
-                            orelocs, ibuf + rvamin, 1, &big_relocs),
+                            orelocs, ibuf + rvamin, ibufgood - rvamin, 1, &big_relocs),
                         orelocs);
 
     for (ic = 15; ic; ic--)
@@ -589,7 +605,7 @@ class PeFile::ImportLinker : public ElfLinkerAMD64
 {
     struct tstr : private ::noncopyable
     {
-        char *s;
+        char *s = nullptr;
         explicit tstr(char *str) : s(str) {}
         ~tstr() { delete [] s; }
         operator char *() const { return s; }
@@ -671,7 +687,9 @@ class PeFile::ImportLinker : public ElfLinkerAMD64
             addRelocation(desc_name, offsetof(import_desc, dllname),
                           "R_X86_64_32", sdll, 0);
         }
-        tstr thunk(name_for_proc(dll, proc, thunk_id, tsep));
+        tstr thunk(proc == nullptr ? name_for_dll(dll, thunk_id)
+                                   : name_for_proc(dll, proc, thunk_id, tsep));
+
         if (findSection(thunk, false) != nullptr)
             return; // we already have this dll/proc
         addSection(thunk, zeros, thunk_size, 0);
@@ -691,7 +709,7 @@ class PeFile::ImportLinker : public ElfLinkerAMD64
             addRelocation(thunk, 0, reltype, "*UND*",
                           ordinal | (1ull << (thunk_size * 8 - 1)));
         }
-        else
+        else if (proc != nullptr)
         {
             tstr proc_name(name_for_proc(dll, proc, proc_name_id, procname_separator));
             addSection(proc_name, zeros, 2, 1); // 2 bytes of word aligned "hint"
@@ -701,6 +719,8 @@ class PeFile::ImportLinker : public ElfLinkerAMD64
             strcat(proc_name, "X");
             addSection(proc_name, proc, strlen(proc), 0); // the name of the symbol
         }
+        else
+            infoWarning("empty import: %s", dll);
     }
 
     static int __acc_cdecl_qsort compare(const void *p1, const void *p2)
@@ -710,7 +730,7 @@ class PeFile::ImportLinker : public ElfLinkerAMD64
         return strcmp(s1->name, s2->name);
     }
 
-    virtual void alignCode(unsigned len) { alignWithByte(len, 0); }
+    virtual void alignCode(unsigned len) override { alignWithByte(len, 0); }
 
     const Section *getThunk(const char *dll, const char *proc, char tsep) const
     {
@@ -739,10 +759,10 @@ public:
     void add(const C *dll, unsigned ordinal)
     {
         ACC_COMPILE_TIME_ASSERT(sizeof(C) == 1)  // "char" or "unsigned char"
-        assert(ordinal > 0 && ordinal < 0x10000);
+        assert(ordinal < 0x10000);
         char ord[1+5+1];
         upx_safe_snprintf(ord, sizeof(ord), "%c%05u", ordinal_id, ordinal);
-        add((const char*) dll, ord, ordinal);
+        add((const char*) dll, ordinal ? ord : nullptr, ordinal);
     }
 
     template <typename C1, typename C2>
@@ -848,6 +868,9 @@ void PeFile::processImports2(unsigned myimport, unsigned) // pass 2
 {
     COMPILE_TIME_ASSERT(sizeof(import_desc) == 20);
 
+    if (!ilinker)
+        return;
+
     ilinker->relocate_import(myimport);
     int len;
     oimpdlls = ilinker->getLoader(&len);
@@ -858,6 +881,13 @@ void PeFile::processImports2(unsigned myimport, unsigned) // pass 2
 template <typename LEXX, typename ord_mask_t>
 unsigned PeFile::processImports0(ord_mask_t ord_mask) // pass 1
 {
+    if (isefi) {
+        if (IDSIZE(PEDIR_IMPORT))
+            throwCantPack("imports not supported on EFI");
+
+        return 0;
+    }
+
     unsigned dllnum = 0;
     unsigned const take = IDSIZE(PEDIR_IMPORT);
     unsigned const skip = IDADDR(PEDIR_IMPORT);
@@ -975,12 +1005,10 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) // pass 1
         }
         else if (!ilinker->hasDll(idlls[ic]->name))
         {
-            if (idlls[ic]->ordinal)
-                ilinker->add(idlls[ic]->name, idlls[ic]->ordinal);
-            else if (idlls[ic]->shname)
+            if (idlls[ic]->shname && !idlls[ic]->ordinal)
                 ilinker->add(idlls[ic]->name, idlls[ic]->shname);
             else
-                throwInternalError("should not happen");
+                ilinker->add(idlls[ic]->name, idlls[ic]->ordinal);
         }
     }
 
@@ -993,10 +1021,6 @@ unsigned PeFile::processImports0(ord_mask_t ord_mask) // pass 1
     for (ic = 0; ic < dllnum; ic++)
     {
         LEXX *tarr = idlls[ic]->lookupt;
-#if 0 && ENABLE_THIS_AND_UNCOMPRESSION_WILL_BREAK // FIXME
-        if (!*tarr)  // no imports from this dll
-            continue;
-#endif
         set_le32(ppi, ilinker->getAddress(idlls[ic]->name));
         set_le32(ppi+4,idlls[ic]->iat - rvamin);
         ppi += 8;
@@ -1297,6 +1321,9 @@ void PeFile::processTls1(Interval *iv,
 
     COMPILE_TIME_ASSERT(sizeof(tls) == tls_traits<LEXX>::sotls)
     COMPILE_TIME_ASSERT_ALIGNED1(tls)
+
+    if (isefi && IDSIZE(PEDIR_TLS))
+        throwCantPack("TLS not supported on EFI");
 
     unsigned const take = ALIGN_UP(IDSIZE(PEDIR_TLS),4u);
     sotls = take;
@@ -1900,7 +1927,7 @@ void PeFile::processResources(Resource *res)
 
     // setup default options for resource compression
     if (opt->win32_pe.compress_resources < 0)
-        opt->win32_pe.compress_resources = true;
+        opt->win32_pe.compress_resources = !isefi;
     if (!opt->win32_pe.compress_resources)
     {
         opt->win32_pe.compress_icons = false;
@@ -2148,28 +2175,55 @@ void PeFile::checkHeaderValues(unsigned subsystem, unsigned mask,
     if (ih_entry && ih_entry < rvamin)
         throwCantPack("run a virus scanner on this file!");
 
-    if (ih_filealign < 0x200)
-        throwCantPack("filealign < 0x200 is not yet supported");
+    const unsigned fam1 = ih_filealign - 1;
+    if (!(1+ fam1) || (1+ fam1) & fam1) { // ih_filealign is not a power of 2
+        char buf[32]; snprintf(buf, sizeof(buf), "bad file alignment %#x", 1+ fam1);
+        throwCantPack(buf);
+    }
 }
 
 unsigned PeFile::handleStripRelocs(upx_uint64_t ih_imagebase,
                                    upx_uint64_t default_imagebase,
-                                   unsigned dllflags)
+                                   LE16 &dllflags)
 {
-    if (dllflags & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
-        opt->win32_pe.strip_relocs = false;
-    else if (isdll) //do never strip relocations from DLLs
-        opt->win32_pe.strip_relocs = false;
-    else if (opt->win32_pe.strip_relocs < 0)
-        opt->win32_pe.strip_relocs = (ih_imagebase >= default_imagebase);
+    if (opt->win32_pe.strip_relocs < 0)
+    {
+        if (isdll || isefi || dllflags & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
+            opt->win32_pe.strip_relocs = false;
+        else
+            opt->win32_pe.strip_relocs = ih_imagebase >= default_imagebase;
+    }
     if (opt->win32_pe.strip_relocs)
     {
-        if (ih_imagebase < default_imagebase)
-            throwCantPack("--strip-relocs is not allowed with this imagebase");
-        else
-            return RELOCS_STRIPPED;
+        if (isdll || isefi)
+            throwCantPack("--strip-relocs is not allowed with DLL and EFI images");
+        if (dllflags & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
+        {
+            if (opt->force) // Disable ASLR
+            {
+                // The bit is set, so clear it with XOR
+                dllflags ^= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+                // HIGH_ENTROPY_VA has no effect without DYNAMIC_BASE, so clear
+                // it also if set
+                dllflags &= ~(unsigned)IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA;
+            }
+            else
+                throwCantPack("--strip-relocs is not allowed with ASLR (use "
+                              "with --force to remove)");
+        }
+        if (!opt->force && ih_imagebase < default_imagebase)
+            throwCantPack("--strip-relocs may not support this imagebase (try "
+                          "with --force)");
+        return RELOCS_STRIPPED;
     }
+    else
+        info("Base relocations stripping is disabled for this image");
     return 0;
+}
+
+static unsigned umax(unsigned a, unsigned b)
+{
+    return (a >= b) ? a : b;
 }
 
 unsigned PeFile::readSections(unsigned objs, unsigned usize,
@@ -2182,7 +2236,7 @@ unsigned PeFile::readSections(unsigned objs, unsigned usize,
 
     // BOUND IMPORT support. FIXME: is this ok?
     fi->seek(0,SEEK_SET);
-    fi->readx(ibuf,isection[0].rawdataptr);
+    fi->readx(ibuf,ibufgood= isection[0].rawdataptr);
 
     //Interval holes(ibuf);
 
@@ -2217,6 +2271,7 @@ unsigned PeFile::readSections(unsigned objs, unsigned usize,
         if (isection[ic].vaddr + jc > ibuf.getSize())
             throwInternalError("buffer too small 1");
         fi->readx(ibuf.subref("bad section %#x", isection[ic].vaddr, jc), jc);
+        ibufgood= umax(ibufgood, jc + isection[ic].vaddr);  // FIXME: simplistic
         jc += isection[ic].rawdataptr;
     }
     return overlaystart;
@@ -2260,9 +2315,6 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     if (!opt->force && handleForceOption())
         throwCantPack("unexpected value in PE header (try --force)");
 
-    if (ih.dllflags & IMAGE_DLLCHARACTERISTICS_CONTROL_FLOW_GUARD)
-        throwCantPack("CFGuard enabled PE files are not supported");
-
     if (ih.dllflags & IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY)
     {
         if (opt->force)
@@ -2276,14 +2328,52 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     if (IDSIZE(PEDIR_SEC))
         IDSIZE(PEDIR_SEC) = IDADDR(PEDIR_SEC) = 0;
 
-    ih.flags |= handleStripRelocs(ih.imagebase, default_imagebase, ih.dllflags);
+    if (ih.flags & RELOCS_STRIPPED)
+        opt->win32_pe.strip_relocs = true;
+    else
+        ih.flags |= handleStripRelocs(ih.imagebase, default_imagebase, ih.dllflags);
 
-    handleStub(fi,fo,pe_offset);
+    if (isefi) {
+        // PIC for EFI only to avoid false positive detections of Win32 images
+        // without relocations fixed address is smaller
+        if (!opt->win32_pe.strip_relocs)
+            use_stub_relocs = false;
+
+        // EFI build tools already clear DOS stub
+        // and small file alignment benefits from extra space
+        unsigned char stub[0x40];
+        memset(stub, 0, sizeof(stub));
+        set_le16(stub, 'M' + 'Z'*256);
+        set_le32(stub + sizeof(stub) - sizeof(LE32), sizeof(stub));
+        fo->write(stub, sizeof(stub));
+        pe_offset = sizeof(stub);
+    } else
+        handleStub(fi,fo,pe_offset);
     unsigned overlaystart = readSections(objs, ih.imagesize, ih.filealign, ih.datasize);
     unsigned overlay = file_size - stripDebug(overlaystart);
     if (overlay >= (unsigned) file_size)
         overlay = 0;
     checkOverlay(overlay);
+
+    if (ih.dllflags & IMAGE_DLLCHARACTERISTICS_CONTROL_FLOW_GUARD)
+    {
+        if (opt->force)
+        {
+            const unsigned lcsize = IDSIZE(PEDIR_LOADCONF);
+            const unsigned lcaddr = IDADDR(PEDIR_LOADCONF);
+            const unsigned gfpos = 14 * sizeof(ih.imagebase) +
+                                   6 * sizeof(LE32) + 4 * sizeof(LE16);
+            if (lcaddr && lcsize >= gfpos + sizeof(LE32))
+                // GuardFlags: Set IMAGE_GUARD_SECURITY_COOKIE_UNUSED
+                // and clear the rest
+                set_le32(ibuf.subref("bad guard flags at %#x", lcaddr + gfpos,
+                                     sizeof(LE32)), 0x00000800);
+            ih.dllflags ^= IMAGE_DLLCHARACTERISTICS_CONTROL_FLOW_GUARD;
+        }
+        else
+            throwCantPack("CFGuard enabled PE files are not supported (use "
+                          "--force to disable)");
+    }
 
     Resource res(ibuf, ibuf + ibuf.getSize());
     Interval tlsiv(ibuf);
@@ -2307,13 +2397,10 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
         allow_filter = false;
 
     const unsigned oam1 = ih.objectalign - 1;
-    if ((1+ oam1) & oam1) { // ih.objectalign is not a power of 2
-        char buf[32]; snprintf(buf, sizeof(buf), "bad alignment %#x", 1+ oam1);
+    if (!(1+ oam1) || (1+ oam1) & oam1) { // ih.objectalign is not a power of 2
+        char buf[32]; snprintf(buf, sizeof(buf), "bad object alignment %#x", 1+ oam1);
         throwCantPack(buf);
     }
-
-    // FIXME: disabled: the uncompressor would not allocate enough memory
-    //objs = tryremove(IDADDR(PEDIR_RELOC),objs);
 
     // FIXME: if the last object has a bss then this won't work
     // newvsize = (isection[objs-1].vaddr + isection[objs-1].size + oam1) &~ oam1;
@@ -2388,6 +2475,9 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     if (tlsindex && ((newvsize - ph.c_len - 1024 + oam1) &~ oam1) > tlsindex + 4)
         tlsindex = 0;
 
+    const int oh_filealign = UPX_MIN(ih.filealign, 0x200);
+    const unsigned fam1 = oh_filealign - 1;
+
     int identsize = 0;
     const unsigned codesize = getLoaderSection("IDENTSTR",&identsize);
     assert(identsize > 0);
@@ -2395,7 +2485,9 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     getLoaderSection("UPX1HEAD",(int*)&ic);
     identsize += ic;
 
-    const unsigned oobjs = last_section_rsrc_only ? 4 : 3;
+    const bool has_oxrelocs = !opt->win32_pe.strip_relocs && (use_stub_relocs || sotls || loadconfiv.ivnum);
+    const bool has_ncsection = has_oxrelocs || soimpdlls || soexport || soresources;
+    const unsigned oobjs = last_section_rsrc_only ? 4 : has_ncsection ? 3 : 2;
     ////pe_section_t osection[oobjs];
     pe_section_t osection[4];
     // section 0 : bss
@@ -2411,18 +2503,19 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     // identsplit - number of ident + (upx header) bytes to put into the PE header
     const unsigned sizeof_osection = sizeof(osection[0]) * oobjs;
     int identsplit = pe_offset + sizeof_osection + sizeof(ht);
-    if ((identsplit & 0x1ff) == 0)
+    if ((identsplit & fam1) == 0)
         identsplit = 0;
-    else if (((identsplit + identsize) ^ identsplit) < 0x200)
+    else if (((identsplit + identsize) ^ identsplit) < oh_filealign)
         identsplit = identsize;
     else
-        identsplit = ALIGN_GAP(identsplit, 0x200);
+        identsplit = ALIGN_GAP(identsplit, oh_filealign);
     ic = identsize - identsplit;
 
     const unsigned c_len = ((ph.c_len + ic) & 15) == 0 ? ph.c_len : ph.c_len + 16 - ((ph.c_len + ic) & 15);
     obuf.clear(ph.c_len, c_len - ph.c_len);
 
-    const unsigned s1size = ALIGN_UP(ic + c_len + codesize, (unsigned) sizeof(LEXX)) + sotls + soloadconf;
+    const unsigned aligned_sotls = ALIGN_UP(sotls, (unsigned)sizeof(LEXX));
+    const unsigned s1size = ALIGN_UP(ic + c_len + codesize, (unsigned) sizeof(LEXX)) + aligned_sotls + soloadconf;
     const unsigned s1addr = (newvsize - (ic + c_len) + oam1) &~ oam1;
 
     const unsigned ncsection = (s1addr + s1size + oam1) &~ oam1;
@@ -2433,7 +2526,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
 
     // new PE header
     memcpy(&oh,&ih,sizeof(oh));
-    oh.filealign = 0x200; // identsplit depends on this
+    oh.filealign = oh_filealign; // identsplit depends on this
     memset(osection,0,sizeof(osection));
 
     oh.entry = upxsection;
@@ -2449,22 +2542,22 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     ODSIZE(PEDIR_BOUNDIM) = 0;
 
     // tls & loadconf are put into section 1
-    ic = s1addr + s1size - sotls - soloadconf;
+    ic = s1addr + s1size - aligned_sotls - soloadconf;
 
     if (use_tls_callbacks)
         tls_handler_offset = linker->getSymbolOffset("PETLSC2") + upxsection;
 
     processTls(&rel,&tlsiv,ic);
-    ODADDR(PEDIR_TLS) = sotls ? ic : 0;
-    ODSIZE(PEDIR_TLS) = sotls ? (sizeof(LEXX) == 4 ? 0x18 : 0x28) : 0;
-    ic = ALIGN_UP(ic + sotls, 4u);
+    ODADDR(PEDIR_TLS) = aligned_sotls ? ic : 0;
+    ODSIZE(PEDIR_TLS) = aligned_sotls ? (sizeof(LEXX) == 4 ? 0x18 : 0x28) : 0;
+    ic += aligned_sotls;
 
     processLoadConf(&rel, &loadconfiv, ic);
     ODADDR(PEDIR_LOADCONF) = soloadconf ? ic : 0;
     ODSIZE(PEDIR_LOADCONF) = soloadconf;
     ic += soloadconf;
 
-    const bool rel_at_sections_start = oobjs == 4;
+    const bool rel_at_sections_start = last_section_rsrc_only;
 
     ic = ncsection;
     if (!last_section_rsrc_only)
@@ -2473,7 +2566,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
         callProcessRelocs(rel, ic);
 
     processImports2(ic, getProcessImportParam(upxsection));
-    ODADDR(PEDIR_IMPORT) = ic;
+    ODADDR(PEDIR_IMPORT) = soimpdlls ? ic : 0;
     ODSIZE(PEDIR_IMPORT) = soimpdlls;
     ic += soimpdlls;
 
@@ -2506,12 +2599,13 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
 
     const unsigned ncsize = soxrelocs + soimpdlls + soexport
         + (!last_section_rsrc_only ? soresources : 0);
-    const unsigned fam1 = oh.filealign - 1;
+    assert((soxrelocs == 0) == !has_oxrelocs);
+    assert((ncsize == 0) == !has_ncsection);
 
     // this one is tricky: it seems windoze touches 4 bytes after
     // the end of the relocation data - so we have to increase
     // the virtual size of this section
-    const unsigned ncsize_virt_increase = (ncsize & oam1) == 0 ? 8 : 0;
+    const unsigned ncsize_virt_increase = soxrelocs && (ncsize & oam1) == 0 ? 8 : 0;
 
     // fill the sections
     strcpy(osection[0].name,"UPX0");
@@ -2535,7 +2629,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     osection[2].size = (ncsize + fam1) &~ fam1;
 
     osection[0].vsize = osection[1].vaddr - osection[0].vaddr;
-    if (oobjs == 3)
+    if (!last_section_rsrc_only)
     {
         osection[1].vsize = (osection[1].size + oam1) &~ oam1;
         osection[2].vsize = (osection[2].size + ncsize_virt_increase + oam1) &~ oam1;
@@ -2556,7 +2650,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     osection[1].flags = (unsigned) (PEFL_DATA|PEFL_EXEC|PEFL_WRITE|PEFL_READ);
     osection[2].flags = (unsigned) (PEFL_DATA|PEFL_WRITE|PEFL_READ);
 
-    if (oobjs == 4)
+    if (last_section_rsrc_only)
     {
         strcpy(osection[3].name, ".rsrc");
         osection[3].vaddr = res_start;
@@ -2582,7 +2676,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     if (rvamin < osection[0].rawdataptr)
         throwCantPack("object alignment too small");
 
-    if (opt->win32_pe.strip_relocs && !isdll)
+    if (opt->win32_pe.strip_relocs)
         oh.flags |= RELOCS_STRIPPED;
 
     //for (ic = 0; ic < oh.filealign; ic += 4)
@@ -2600,7 +2694,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     // some alignment
     if (identsplit == identsize)
     {
-        unsigned n = osection[oobjs == 3 ? 0 : 1].rawdataptr - fo->getBytesWritten() - identsize;
+        unsigned n = osection[!last_section_rsrc_only ? 0 : 1].rawdataptr - fo->getBytesWritten() - identsize;
         assert(n <= oh.filealign);
         fo->write(ibuf, n);
     }
@@ -2613,7 +2707,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
         OutputFile::dump(opt->debug.dump_stub_loader, loader, codesize);
     if ((ic = fo->getBytesWritten() & (sizeof(LEXX) - 1)) != 0)
         fo->write(ibuf, sizeof(LEXX) - ic);
-    fo->write(otls,sotls);
+    fo->write(otls, aligned_sotls);
     fo->write(oloadconf, soloadconf);
     if ((ic = fo->getBytesWritten() & fam1) != 0)
         fo->write(ibuf,oh.filealign - ic);
@@ -2623,7 +2717,6 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
         fo->write(oxrelocs,soxrelocs);
     fo->write(oimpdlls,soimpdlls);
     fo->write(oexport,soexport);
-    fo->write(oxrelocs,soxrelocs);
     if (!last_section_rsrc_only)
         fo->write(oxrelocs,soxrelocs);
 
@@ -2644,6 +2737,7 @@ void PeFile::pack0(OutputFile *fo, ht &ih, ht &oh,
     printf("%-13s: compressed   : %8ld bytes\n", getName(), (long) c_len);
     printf("%-13s: decompressor : %8ld bytes\n", getName(), (long) codesize);
     printf("%-13s: tls          : %8ld bytes\n", getName(), (long) sotls);
+    printf("%-13s: aligned_tls  : %8ld bytes\n", getName(), (long) aligned_sotls);
     printf("%-13s: resources    : %8ld bytes\n", getName(), (long) soresources);
     printf("%-13s: imports      : %8ld bytes\n", getName(), (long) soimpdlls);
     printf("%-13s: exports      : %8ld bytes\n", getName(), (long) soexport);
@@ -2914,7 +3008,7 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh,
     ibuf.alloc(ph.c_len);
     obuf.allocForUncompression(ph.u_len);
     fi->seek(isection[1].rawdataptr - 64 + ph.buf_offset + ph.getPackHeaderSize(),SEEK_SET);
-    fi->readx(ibuf,ph.c_len);
+    fi->readx(ibuf, ibufgood= ph.c_len);
 
     // decompress
     decompress(ibuf,obuf);
@@ -2928,7 +3022,7 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh,
     skip      += take;
     unsigned objs = oh.objects;
 
-    if ((int) objs <= 0 || isection[2].size == 0)
+    if ((int) objs <= 0 || (iobjs > 2 && isection[2].size == 0))
         throwCantUnpack("unexpected value in the PE header");
     Array(pe_section_t, osection, objs);
     take = sizeof(pe_section_t) * objs;
@@ -2938,11 +3032,14 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh,
     skip      += take;
     rvamin = osection[0].vaddr;
 
-    // read the noncompressed section
-    ibuf.dealloc();
-    ibuf.alloc(isection[2].size);
-    fi->seek(isection[2].rawdataptr,SEEK_SET);
-    fi->readx(ibuf,isection[2].size);
+    if (iobjs > 2)
+    {
+        // read the noncompressed section
+        ibuf.dealloc();
+        ibuf.alloc(isection[2].size);
+        fi->seek(isection[2].rawdataptr,SEEK_SET);
+        fi->readx(ibuf, ibufgood= isection[2].size);
+    }
 
     // unfilter
     if (ph.filter)
@@ -2967,13 +3064,13 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh,
     rebuildTls();
     rebuildExports();
 
-    if (iobjs == 4)
+    if (iobjs > 3)
     {
         // read the resource section if present
         ibuf.dealloc();
         ibuf.alloc(isection[3].size);
         fi->seek(isection[3].rawdataptr,SEEK_SET);
-        fi->readx(ibuf,isection[3].size);
+        fi->readx(ibuf, ibufgood= isection[3].size);
     }
 
     rebuildResources(extrainfo, isection[ih.objects - 1].vaddr);
@@ -2990,9 +3087,7 @@ void PeFile::unpack0(OutputFile *fo, const ht &ih, ht &oh,
     ODADDR(PEDIR_BOUNDIM) = 0;
     ODSIZE(PEDIR_BOUNDIM) = 0;
 
-    // oh.headersize = osection[0].rawdataptr;
-    // oh.headersize = ALIGN_UP(pe_offset + sizeof(oh) + sizeof(pe_section_t) * objs, oh.filealign);
-    oh.headersize = rvamin;
+    setOhHeaderSize(osection);
     oh.chksum = 0;
 
     // write decompressed file
@@ -3030,9 +3125,10 @@ int PeFile::canUnpack0(unsigned max_sections, LE16 &ih_objects,
     isection = (pe_section_t *)mb_isection.getVoidPtr();
     fi->seek(pe_offset + ihsize, SEEK_SET);
     fi->readx(isection,sizeof(pe_section_t)*objs);
-    if (ih_objects < 3)
+    const unsigned min_sections = isefi ? 2 : 3;
+    if (ih_objects < min_sections)
         return -1;
-    bool is_packed = ((ih_objects == 3 || ih_objects == max_sections) &&
+    bool is_packed = (ih_objects >= min_sections && ih_objects <= max_sections &&
                       (IDSIZE(15) || ih_entry > isection[1].vaddr));
     bool found_ph = false;
     if (memcmp(isection[0].name,"UPX",3) == 0)
@@ -3116,7 +3212,15 @@ PeFile32::~PeFile32()
 void PeFile32::readPeHeader()
 {
     fi->readx(&ih,sizeof(ih));
-    isdll = ((ih.flags & DLL_FLAG) != 0);
+    isefi = ((1u << ih.subsystem) & (
+                                (1u<<IMAGE_SUBSYSTEM_EFI_APPLICATION)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_ROM)
+                                  )) != 0;
+    isdll = !isefi && (ih.flags & DLL_FLAG) != 0;
+    use_dep_hack &= !isefi;
+    use_clear_dirty_stack &= !isefi;
 }
 
 void PeFile32::pack0(OutputFile *fo, unsigned subsystem_mask,
@@ -3125,6 +3229,7 @@ void PeFile32::pack0(OutputFile *fo, unsigned subsystem_mask,
 {
     super::pack0<LE32>(fo, ih, oh, subsystem_mask,
                        default_imagebase, last_section_rsrc_only);
+    infoWarning("End of PeFile32::pack0");
 }
 
 void PeFile32::unpack(OutputFile *fo)
@@ -3173,7 +3278,15 @@ PeFile64::~PeFile64()
 void PeFile64::readPeHeader()
 {
     fi->readx(&ih,sizeof(ih));
-    isdll = ((ih.flags & DLL_FLAG) != 0);
+    isefi = ((1u << ih.subsystem) & (
+                                (1u<<IMAGE_SUBSYSTEM_EFI_APPLICATION)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER)
+                              | (1u<<IMAGE_SUBSYSTEM_EFI_ROM)
+                                  )) != 0;
+    isdll = !isefi && (ih.flags & DLL_FLAG) != 0;
+    use_dep_hack &= !isefi;
+    use_clear_dirty_stack &= !isefi;
 }
 
 void PeFile64::pack0(OutputFile *fo, unsigned subsystem_mask,

@@ -16,16 +16,18 @@ on:
 jobs:
   job-rebuild-and-verify-stubs:
     name: 'Rebuild stubs'
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-20.04
     steps:
       - name: 'Install extra packages'
         run: |
           uname -a; pwd; id; umask
-          export DEBIAN_FRONTEND=noninteractive
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y libmpfr4:i386 zlib1g:i386
-          cd ..; mkdir -p deps; cd deps
+          cd ..; mkdir -p deps; cd deps; mkdir packages
+          # manually install compat libs from Ubuntu 16.04
+          wget -q 'http://mirror.enzu.com/ubuntu/pool/main/g/gmp/libgmp10_6.1.0+dfsg-2_amd64.deb'
+          wget -q 'http://mirror.enzu.com/ubuntu/pool/main/m/mpfr4/libmpfr4_3.1.4-1_amd64.deb'
+          for f in *.deb; do dpkg -x $f ./packages; done
+          sudo mv -v -n ./packages/usr/lib/x86_64-linux-gnu/lib* /usr/lib/x86_64-linux-gnu/
+          sudo ldconfig
           wget -q -O - https://github.com/upx/upx-stubtools/releases/download/v20210104/bin-upx-20210104.tar.xz | tar -xJ
       - name: 'Check out code'
         uses: actions/checkout@v2
@@ -87,6 +89,18 @@ jobs:
           export C=${{matrix.C}} B=${{matrix.B}} T=${{matrix.T}} X=${{matrix.X}} TRAVIS_OS_NAME=linux
           bash ./.github/travis_testsuite_1.sh
 
+      - name: 'Make artifact'
+        run: |
+          export C=${{matrix.C}} B=${{matrix.B}}; [ -n "$B" ] || B="release"
+          mkdir tmp
+          cp ../build/github/$C/$B/upx/upx.out tmp/upx
+
+      - name: 'Upload artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.name }}
+          path: tmp
+
   job-windows-cross-toolchains:
     needs: [ job-rebuild-and-verify-stubs ]
     name: ${{ matrix.name }}
@@ -130,6 +144,19 @@ jobs:
           export C=${{matrix.C}} B=${{matrix.B}} T=${{matrix.T}} X=${{matrix.X}} TRAVIS_OS_NAME=linux
           export CROSS=${{matrix.CROSS}}
           bash ./.github/travis_testsuite_1.sh
+
+      - name: 'Make artifact'
+        run: |
+          export C=${{matrix.C}} B=${{matrix.B}}; [ -n "$B" ] || B="release"
+          export CROSS=${{matrix.CROSS}}
+          mkdir tmp
+          cp ../build/github/$CROSS-$C/$B/upx/upx.exe tmp/upx.exe
+
+      - name: 'Upload artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.name }}
+          path: tmp
 
   job-windows-toolchains:
     needs: [ job-rebuild-and-verify-stubs ]
@@ -198,7 +225,7 @@ jobs:
           set s=%H%\upx\src
           cat .GITREV.txt
           set /p GITREV=<.GITREV.txt
-          cl -MT -EHsc -J -O2 -W4 -WX -DUPX_VERSION_GITREV="""%GITREV%""" %DEFS% -I%s%\lzma-sdk -I%H%\deps\ucl-1.03\include -I%H%\deps\zlib-1.2.11 -Feupx.exe %s%\*.cpp %BDIR%\ucl-1.03\ucl.lib %BDIR%\zlib-1.2.11\zlib.lib
+          cl -MT -EHsc -J -O2 -W4 -WX -DUPX_VERSION_GITREV="""%GITREV%""" %DEFS% -I%s%\lzma-sdk -I%H%\deps\ucl-1.03\include -I%H%\deps\zlib-1.2.11 -Feupx.exe %s%\*.cpp %BDIR%\ucl-1.03\ucl.lib %BDIR%\zlib-1.2.11\zlib.lib /link setargv.obj
 
       - name: 'Basic tests'
         shell: cmd
@@ -216,5 +243,17 @@ jobs:
         shell: cmd
         run: |
           bash ./.github/travis_testsuite_1.sh
+
+      - name: 'Make artifact'
+        shell: cmd
+        run: |
+          mkdir tmp
+          copy %H%\build\%C%\%B%\upx\upx_packed.exe tmp\upx.exe
+
+      - name: 'Upload artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ matrix.name }}
+          path: tmp
 
 # vim:set ts=2 sw=2 et:

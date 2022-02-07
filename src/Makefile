@@ -9,7 +9,10 @@ MAKEFLAGS += -r
 export SHELL = /bin/sh
 
 # build configuration options for this Makefile
-BUILD_TYPE_DEBUG    ?= 1
+# 2021-03-07  BUILD_TYPE_DEBUG is off because CI build amd64-win64-gcc-9
+#             fails because it lacks libsantizer.spec, which is required
+#             by -fsanitize=undefined which is turned on by BUILD_TYPE_DEBUG.
+BUILD_TYPE_DEBUG    ?= 0
 BUILD_TYPE_SANITIZE ?= 0
 BUILD_USE_DEPEND    ?= 1
 
@@ -88,6 +91,7 @@ CXXFLAGS_WERROR ?= -Werror
 
 # Mandatory Flags - DO NOT CHANGE!
 mf.CPPFLAGS += $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES)
+mf.CXXFLAGS += -std=c++14
 mf.CXXFLAGS += $(CXXFLAGS_OPTIMIZE)
 # protect against security threats caused by misguided C++ compiler "optimizations"
 mf.CXXFLAGS += $(CXXFLAGS_NO_DELETE_NULL_POINTER_CHECKS)
@@ -95,6 +99,7 @@ mf.CXXFLAGS += -fno-strict-aliasing -fno-strict-overflow
 mf.CXXFLAGS += -funsigned-char
 mf.CXXFLAGS += $(CXXFLAGS_SANITIZE)
 mf.CXXFLAGS += -Wall -Wextra -Wcast-align -Wcast-qual -Wmissing-declarations -Wpointer-arith -Wshadow -Wvla -Wwrite-strings
+##mf.CXXFLAGS += -Wsuggest-override
 mf.CXXFLAGS += $(CXXFLAGS_WERROR)
 
 # rules

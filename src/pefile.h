@@ -59,7 +59,7 @@ protected:
                            unsigned ih_entry, unsigned ih_filealign);
     unsigned handleStripRelocs(upx_uint64_t ih_imagebase,
                                upx_uint64_t default_imagebase,
-                               unsigned dllflags);
+                               LE16 &dllflags);
 
     virtual bool handleForceOption() = 0;
     virtual void callCompressWithFilters(Filter &, int filter_strategy,
@@ -212,8 +212,10 @@ protected:
     pe_section_t *isection;
     bool isdll;
     bool isrtm;
+    bool isefi;
     bool use_dep_hack;
     bool use_clear_dirty_stack;
+    bool use_stub_relocs;
 
 
     static unsigned virta2objnum (unsigned, pe_section_t *, unsigned);
@@ -270,6 +272,7 @@ protected:
 
     //NEW: DLL characteristics definition for ASLR, ... - Stefan Widmann
     enum {
+        IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA       = 0x0020,
         IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE          = 0x0040,
         IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY       = 0x0080,
         IMAGE_DLLCHARACTERISTICS_NX_COMPAT             = 0x0100,
@@ -279,6 +282,22 @@ protected:
         IMAGE_DLLCHARACTERISTICS_WDM_DRIVER            = 0x2000,
         IMAGE_DLLCHARACTERISTICS_CONTROL_FLOW_GUARD    = 0x4000,
         IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE = 0x8000
+    };
+
+    enum {
+        IMAGE_SUBSYSTEM_UNKNOWN = 0,
+        IMAGE_SUBSYSTEM_NATIVE  = 1,
+        IMAGE_SUBSYSTEM_WINDOWS_GUI  = 2,  // Grapical
+        IMAGE_SUBSYSTEM_WINDOWS_CUI  = 3,  // Character-mode
+        IMAGE_SUBSYSTEM_WINDOWS_OS2_CUI  = 5,
+        IMAGE_SUBSYSTEM_WINDOWS_POSIX_CUI  = 7,
+        IMAGE_SUBSYSTEM_WINDOWS_CE_GUI  = 9,
+        IMAGE_SUBSYSTEM_EFI_APPLICATION  = 10,
+        IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER  = 11,
+        IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER  = 12,
+        IMAGE_SUBSYSTEM_EFI_ROM  = 13,
+        IMAGE_SUBSYSTEM_XBOX  = 14,
+        IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION  = 16
     };
 
     // predefined resource types

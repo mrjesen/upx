@@ -199,7 +199,7 @@ protected:
 
     // packheader handling
     virtual int patchPackHeader(void *b, int blen);
-    virtual bool getPackHeader(void *b, int blen, bool allow_incompressible = false);
+    virtual bool getPackHeader(void const *b, int blen, bool allow_incompressible = false);
     virtual bool readPackHeader(int len, bool allow_incompressible = false);
     virtual void checkAlreadyPacked(const void *b, int blen);
 
@@ -269,15 +269,22 @@ protected:
     void checkPatch(void *b, int blen, int boff, int size);
 
     // relocation util
-    static upx_byte *optimizeReloc(upx_byte *in, unsigned relocnum, upx_byte *out, upx_byte *image,
-                                   int bs, int *big, int bits);
-    static unsigned unoptimizeReloc(upx_byte **in, upx_byte *image, MemBuffer *out, int bs,
-                                    int bits);
-    static upx_byte *optimizeReloc32(upx_byte *in, unsigned relocnum, upx_byte *out,
-                                     upx_byte *image, int bs, int *big);
+    static upx_byte *optimizeReloc(
+        upx_byte *in, unsigned relocnum,
+        upx_byte *out, upx_byte *image, unsigned headway,
+        int bs, int *big, int bits);
+    static unsigned unoptimizeReloc(upx_byte **in, upx_byte *image, MemBuffer *out, int bs, int bits);
+
+    static upx_byte *optimizeReloc32(
+        upx_byte *in, unsigned relocnum,
+        upx_byte *out, upx_byte *image, unsigned headway,
+        int bs, int *big);
     static unsigned unoptimizeReloc32(upx_byte **in, upx_byte *image, MemBuffer *out, int bs);
-    static upx_byte *optimizeReloc64(upx_byte *in, unsigned relocnum, upx_byte *out,
-                                     upx_byte *image, int bs, int *big);
+
+    static upx_byte *optimizeReloc64(
+        upx_byte *in, unsigned relocnum,
+        upx_byte *out, upx_byte *image, unsigned headway,
+        int bs, int *big);
     static unsigned unoptimizeReloc64(upx_byte **in, upx_byte *image, MemBuffer *out, int bs);
 
     // target endianness abstraction
@@ -304,6 +311,7 @@ protected:
     // compression buffers
     MemBuffer ibuf; // input
     MemBuffer obuf; // output
+    unsigned ibufgood;  // high-water mark in ibuf (pefile.cpp)
 
     // UI handler
     UiPacker *uip = nullptr;

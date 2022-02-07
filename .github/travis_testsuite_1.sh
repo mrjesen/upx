@@ -9,9 +9,9 @@ set -e; set -o pipefail
 #
 
 if [[ $TRAVIS_OS_NAME == osx ]]; then
-argv0=$0; argv0abs=$(greadlink -en -- "$0"); argv0dir=$(dirname "$argv0abs")
+    argv0=$0; argv0abs=$(greadlink -en -- "$0"); argv0dir=$(dirname "$argv0abs")
 else
-argv0=$0; argv0abs=$(readlink -en -- "$0"); argv0dir=$(dirname "$argv0abs")
+    argv0=$0; argv0abs=$(readlink -en -- "$0"); argv0dir=$(dirname "$argv0abs")
 fi
 source "$argv0dir/travis_init.sh" || exit 1
 
@@ -27,7 +27,7 @@ fi
 # create dirs
 cd / || exit 1
 mkbuilddirs $upx_testsuite_BUILDDIR
-cd / && cd $upx_testsuite_BUILDDIR || exit 1
+cd / && cd "$upx_testsuite_BUILDDIR" || exit 1
 if [[ ! -d $upx_testsuite_SRCDIR/files/packed ]]; then exit 1; fi
 
 # /***********************************************************************
@@ -43,7 +43,7 @@ testsuite_split_f() {
     fb=$(basename "$1")
     fsubdir=$(basename "$fd")
     # sanity checks
-    if [[ ! -f "$1" || -z "$fsubdir" || -z "$fb" ]]; then
+    if [[ ! -f $1 || -z $fsubdir || -z $fb ]]; then
         fd= fb= fsubdir=
     fi
 }
@@ -55,10 +55,10 @@ testsuite_check_sha() {
     if ! cmp -s $1/.sha256sums.expected $1/.sha256sums.current; then
         echo "UPX-ERROR: $1 FAILED: checksum mismatch"
         diff -u $1/.sha256sums.expected $1/.sha256sums.current || true
-        exit_code=1
+        exit_code=99
         let num_errors+=1 || true
         all_errors="${all_errors} $1"
-        #exit 1
+        #exit 99
     fi
     echo
 }
@@ -69,7 +69,7 @@ testsuite_check_sha_decompressed() {
         cat $1/.sha256sums.current
         echo "UPX-ERROR: FATAL: $1 FAILED: decompressed checksum mismatch"
         diff -u $1/.sha256sums.expected $1/.sha256sums.current || true
-        exit 1
+        exit 98
     fi
 }
 
@@ -111,7 +111,7 @@ testsuite_run_compress() {
 # ************************************************************************/
 
 recreate_expected_sha256sums() {
-    local o="$1"
+    local o=$1
     local files f d
     echo "########## begin .sha256sums.recreate" > "$o"
     files=*/.sha256sums.current
@@ -163,7 +163,7 @@ if [[ $BM_T =~ (^|\+)valgrind($|\+) ]]; then
 fi
 
 if [[ $BM_B =~ (^|\+)coverage($|\+) ]]; then
-    (cd / && cd $upx_BUILDDIR && lcov -d . --zerocounters)
+    (cd / && cd "$upx_BUILDDIR" && lcov -d . --zerocounters)
 fi
 
 export UPX="--prefer-ucl --no-color --no-progress"
@@ -193,7 +193,6 @@ for f in $upx_testsuite_SRCDIR/files/packed/*/upx-3.9[15]*; do
     $upx_run -qq -d $f -o $testdir/$fsubdir/$fb
 done
 testsuite_check_sha $testdir
-
 
 # run one pack+unpack step to canonicalize the files
 testdir=t020_canonicalized
@@ -248,7 +247,7 @@ time testsuite_run_compress --all-methods --no-lzma -5 --no-filter
 # // summary
 # ************************************************************************/
 
-# recreate checkums from current version for an easy update in case of changes
+# recreate checksums from current version for an easy update in case of changes
 recreate_expected_sha256sums .sha256sums.recreate
 
 testsuite_header "UPX testsuite summary"
@@ -258,10 +257,10 @@ if ! $upx_run --version; then
 fi
 echo
 echo "upx_exe='$upx_exe'"
-if [[ "$upx_run" != "$upx_exe" ]]; then
+if [[ $upx_run != "$upx_exe" ]]; then
     echo "upx_run='$upx_run'"
 fi
-if [[ -f "$upx_exe" ]]; then
+if [[ -f $upx_exe ]]; then
     ls -l "$upx_exe"
     file "$upx_exe" || true
 fi
