@@ -169,7 +169,7 @@ static const signed char lc_cmd_size[] = {
     P(0x2f /*LC_VERSION_MIN_TVOS*/, 16), // sizeof(Mach32_version_min_command)
     P(0x30 /*LC_VERSION_MIN_WATCHOS*/, 16), // sizeof(Mach32_version_min_command)
     P(0x31 /*LC_NOTE*/, -40), // sizeof(note_command) + data
-    P(0x32 /*LC_BUILD_VERSION*/, 16), // sizeof(Mach32_source_version_command)
+    P(0x32 /*LC_BUILD_VERSION*/, 24), // sizeof(Mach32_source_version_command)
     P(0x33 /*lo(LC_DYLD_EXPORTS_TRIE)*/, 16), // sizeof(linkedit_data_command)
     P(0x34 /*lo(LC_DYLD_CHAINED_FIXUPS)*/, 16), // sizeof(linkedit_data_command)
     P(0x35 /*lo(LC_FILESET_ENTRY)*/, -32), // sizeof(fileset_entry_command) + ???
@@ -2504,9 +2504,9 @@ bool PackMachFat::canPack()
             }
         } break;
         case PackMachFat::CPU_TYPE_ARM64: {
-            PackMachARM64EL packer(fi);
+            PackMachARM64 packer(fi);
             if (!packer.canPack()) {
-                //PackDylibARM64EL pack2r(fi);  FIXME: not yet
+                //PackDylibARM64 pack2r(fi);  FIXME: not yet
                 //if (!pack2r.canPack())
                     return false;
             }
@@ -2523,14 +2523,6 @@ bool PackMachFat::canPack()
             PackMachPPC64LE packer(fi);
             if (!packer.canPack()) {
                 PackDylibPPC64LE pack2r(fi);
-                if (!pack2r.canPack())
-                    return false;
-            }
-        } break;
-        case PackMachFat::CPU_TYPE_ARM64: {
-            PackMachARM64 packer(fi);
-            if (!packer.canPack()) {
-                PackDylibARM64 pack2r(fi);
                 if (!pack2r.canPack())
                     return false;
             }
