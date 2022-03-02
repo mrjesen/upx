@@ -4710,6 +4710,15 @@ void PackLinuxElf64::un_shlib_1(
         unsigned vaddr = get_te64(&i_phdr->p_vaddr);
         unsigned offset = get_te64(&i_phdr->p_offset);
         unsigned filesz = get_te64(&i_phdr->p_filesz);
+        unsigned ibufsz = ibuf.getSize();
+        if (!(type < Elf64_Phdr::PT_NUM
+            && offset <= ibufsz
+            && filesz <= ibufsz
+            && filesz <= (ibufsz - offset))) {
+            char msg[40]; snprintf(msg, sizeof(msg),
+                "bad Elf_Phdr[%d]", k);
+            throwCantUnpack(msg);
+        }
         if (xct_off <= vaddr) {
             if (PT_LOAD64==type) {
                 fi->seek(offset, SEEK_SET);
@@ -5230,11 +5239,13 @@ PackLinuxElf32::check_pt_dynamic(Elf32_Phdr const *const phdr)
     unsigned vaddr = get_te32(&phdr->p_vaddr);
     unsigned filesz = get_te32(&phdr->p_filesz), memsz = get_te32(&phdr->p_memsz);
     unsigned align = get_te32(&phdr->p_align);
-    if (s < t || (u32_t)file_size < (filesz + t)
+    if (file_size_u < t || s < t
+    ||  file_size_u < filesz
+    ||  file_size_u < (filesz + t)
     ||  t < (e_phnum*sizeof(Elf32_Phdr) + sizeof(Elf32_Ehdr))
     ||  (3 & t) || (7 & (filesz | memsz))  // .balign 4; 8==sizeof(Elf32_Dyn)
     ||  (-1+ align) & (t ^ vaddr)
-    ||  (unsigned long)file_size <= memsz
+    ||  file_size_u <= memsz
     ||  filesz < sizeof(Elf32_Dyn)
     ||  memsz  < sizeof(Elf32_Dyn)
     ||  filesz < memsz) {
@@ -5333,11 +5344,13 @@ PackLinuxElf64::check_pt_dynamic(Elf64_Phdr const *const phdr)
     upx_uint64_t vaddr = get_te64(&phdr->p_vaddr);
     upx_uint64_t filesz = get_te64(&phdr->p_filesz), memsz = get_te64(&phdr->p_memsz);
     upx_uint64_t align = get_te64(&phdr->p_align);
-    if (s < t || (upx_uint64_t)file_size < (filesz + t)
+    if (file_size_u < t || s < t
+    ||  file_size_u < filesz
+    ||  file_size_u < (filesz + t)
     ||  t < (e_phnum*sizeof(Elf64_Phdr) + sizeof(Elf64_Ehdr))
     ||  (7 & t) || (0xf & (filesz | memsz))  // .balign 8; 16==sizeof(Elf64_Dyn)
     ||  (-1+ align) & (t ^ vaddr)
-    ||  (unsigned long)file_size <= memsz
+    ||  file_size_u <= memsz
     ||  filesz < sizeof(Elf64_Dyn)
     ||  memsz  < sizeof(Elf64_Dyn)
     ||  filesz < memsz) {
