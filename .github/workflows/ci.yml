@@ -83,11 +83,6 @@ jobs:
           export BUILD_LOCAL_UCL=1
           bash ./.github/travis_build.sh
 
-      - name: 'Run test suite'
-        run: |
-          export C=${{matrix.C}} B=${{matrix.B}} T=${{matrix.T}} X=${{matrix.X}} TRAVIS_OS_NAME=linux
-          bash ./.github/travis_testsuite_1.sh
-
       - name: 'Make artifact'
         run: |
           export C=${{matrix.C}} B=${{matrix.B}}; [ -n "$B" ] || B="release"
@@ -137,12 +132,6 @@ jobs:
           export CROSS=${{matrix.CROSS}}
           export BUILD_LOCAL_UCL=1
           bash ./.github/travis_build.sh
-
-      - name: 'Run test suite using Wine'
-        run: |
-          export C=${{matrix.C}} B=${{matrix.B}} T=${{matrix.T}} X=${{matrix.X}} TRAVIS_OS_NAME=linux
-          export CROSS=${{matrix.CROSS}}
-          bash ./.github/travis_testsuite_1.sh
 
       - name: 'Make artifact'
         run: |
@@ -237,11 +226,6 @@ jobs:
           .\upx.exe -l upx_packed.exe
           .\upx.exe -t upx_packed.exe
           .\upx_packed.exe --version
-
-      - name: 'Run test suite'
-        shell: cmd
-        run: |
-          bash ./.github/travis_testsuite_1.sh
 
       - name: 'Make artifact'
         shell: cmd
