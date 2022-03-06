@@ -72,18 +72,15 @@ if [[ $BM_X =~ (^|\+)rebuild-stubs($|\+) ]]; then
     PATH="$bin_upx:$PATH" make -C src/stub all || failed=1
     if [[ $failed != 0 ]]; then
         echo "UPX-ERROR: FATAL: rebuild-stubs failed"
-        exit 1
     fi
     if ! git diff --quiet; then
         git status || true
         git diff || true
         echo "UPX-ERROR: FATAL: rebuild-stubs git status mismatch. See log file."
-        exit 1
     fi
     git status
     if [[ $BM_X == rebuild-stubs ]]; then
         echo "X=rebuild-stubs done. Exiting."
-        exit 0
     fi
     unset bin_upx extra_subdirs d failed
 fi
